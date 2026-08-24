@@ -48,6 +48,13 @@ def generate_report(project_instructions: str, report_type: str, date_range: str
                      session_count: int, source_text: str, prior_reports_text: str = "") -> dict:
     client = Anthropic(api_key=os.environ['ANTHROPIC_API_KEY'])
 
+    # Daily reports are short; Weekly/Monthly synthesize much more source
+    # material (especially early on, before enough daily-state history has
+    # built up and raw transcripts get used as a fallback) and need more
+    # room to avoid truncating mid-JSON.
+    max_tokens_by_type = {"Daily": 8000, "Weekly": 16000, "Monthly": 16000}
+    max_tokens = max_tokens_by_type.get(report_type, 8000)
+
     system_prompt = f"""{project_instructions}
 
 {JSON_SCHEMA_INSTRUCTIONS}
@@ -65,7 +72,7 @@ Known session count for this period: {session_count}.
 
     response = client.messages.create(
         model=MODEL,
-        max_tokens=8000,
+        max_tokens=max_tokens,
         system=system_prompt,
         messages=[{"role": "user", "content": user_content}],
     )
@@ -76,7 +83,16 @@ Known session count for this period: {session_count}.
         raw_text = raw_text.split("```")[1]
         if raw_text.startswith("json"):
             raw_text = raw_text[4:]
-    data = json.loads(raw_text)
+
+    try:
+        data = json.loads(raw_text)
+    except json.JSONDecodeError as e:
+        stop_reason = response.stop_reason
+        raise RuntimeError(
+            f"Claude's response wasn't valid JSON (likely truncated). "
+            f"stop_reason={stop_reason}, response length={len(raw_text)} chars, "
+            f"max_tokens was {max_tokens}. Original error: {e}"
+        ) from e
     data.setdefault("report_type", report_type)
     data.setdefault("date_range", date_range)
     data.setdefault("session_count", session_count)
