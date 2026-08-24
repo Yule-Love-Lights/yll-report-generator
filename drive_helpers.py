@@ -62,17 +62,29 @@ def upload_docx(drive, folder_id, filename, docx_bytes):
     media = MediaIoBaseUpload(
         io.BytesIO(docx_bytes),
         mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        resumable=True,
+        chunksize=1024 * 1024,  # 1MB chunks
     )
-    file = drive.files().create(
+    request = drive.files().create(
         body={'name': filename, 'parents': [folder_id]},
         media_body=media,
         fields='id, webViewLink',
         supportsAllDrives=True,
-    ).execute()
+    )
+    file = None
+    while file is None:
+        status, file = request.next_chunk(num_retries=5)
     return file
 
 
-def upload_json(drive, folder_id, filename, data_dict):
+def delete_files_with_prefix(drive, folder_id, name_prefix):
+    """Deletes all files in a folder whose name starts with name_prefix.
+    Used to clear out any existing daily-state file(s) before writing a
+    fresh one, so re-running the daily job never leaves duplicates."""
+    existing = list_files(drive, folder_id, name_prefix=name_prefix)
+    for f in existing:
+        drive.files().delete(fileId=f['id'], supportsAllDrives=True).execute()
+    return len(existing)
     payload = json.dumps(data_dict, indent=2).encode('utf-8')
     media = MediaIoBaseUpload(io.BytesIO(payload), mimetype='application/json')
     file = drive.files().create(
@@ -80,7 +92,7 @@ def upload_json(drive, folder_id, filename, data_dict):
         media_body=media,
         fields='id',
         supportsAllDrives=True,
-    ).execute()
+    ).execute(num_retries=5)
     return file
 
 

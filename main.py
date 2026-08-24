@@ -21,7 +21,7 @@ from zoneinfo import ZoneInfo
 
 from drive_helpers import (
     get_drive_service, list_files, download_text, download_bytes,
-    upload_docx, upload_json, download_json,
+    upload_docx, upload_json, download_json, delete_files_with_prefix,
 )
 from report_generator import generate_report
 from docx_renderer import render_report_docx
@@ -133,6 +133,10 @@ def run_daily(drive, today):
 
     # Persist the structured data (not the polished docx) for Weekly to
     # build on later — this is invisible to Naldo/Jason, purely pipeline state.
+    # Clear any prior state for this date first so reruns never leave duplicates.
+    removed = delete_files_with_prefix(drive, INTERNAL_STATE_FOLDER_ID, f"{date_str}_daily_state")
+    if removed:
+        print(f"Removed {removed} existing state file(s) for {date_str} before writing fresh one.")
     upload_json(drive, INTERNAL_STATE_FOLDER_ID, f"{date_str}_daily_state.json", report)
 
     send_dm_to_team(
@@ -165,6 +169,9 @@ def run_weekly(drive, today):
     docx_bytes = render_report_docx(report)
     filename = f"YLL_Ops_Report_Weekly_{start_str}_to_{end_str}.docx"
 
+    removed = delete_files_with_prefix(drive, WEEKLY_REPORTS_FOLDER_ID, filename)
+    if removed:
+        print(f"Removed {removed} existing weekly report(s) for this range before writing fresh one.")
     upload_docx(drive, WEEKLY_REPORTS_FOLDER_ID, filename, docx_bytes)
     send_dm_to_team(
         f"📊 Weekly ops report for {date_range} ({session_count} session(s)) is attached and saved to Drive.",
@@ -204,6 +211,9 @@ def run_monthly(drive, today):
     docx_bytes = render_report_docx(report)
     filename = f"YLL_Ops_Report_Monthly_{month_str}.docx"
 
+    removed = delete_files_with_prefix(drive, MONTHLY_REPORTS_FOLDER_ID, filename)
+    if removed:
+        print(f"Removed {removed} existing monthly report(s) for {month_str} before writing fresh one.")
     upload_docx(drive, MONTHLY_REPORTS_FOLDER_ID, filename, docx_bytes)
     send_dm_to_team(
         f"🗓️ Monthly ops report for {month_label} is attached and saved to Drive.",
