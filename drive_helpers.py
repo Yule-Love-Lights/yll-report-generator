@@ -85,6 +85,9 @@ def delete_files_with_prefix(drive, folder_id, name_prefix):
     for f in existing:
         drive.files().delete(fileId=f['id'], supportsAllDrives=True).execute()
     return len(existing)
+
+
+def upload_json(drive, folder_id, filename, data_dict):
     payload = json.dumps(data_dict, indent=2).encode('utf-8')
     media = MediaIoBaseUpload(io.BytesIO(payload), mimetype='application/json')
     file = drive.files().create(
