@@ -10,12 +10,18 @@ UI, sent as `Authorization: Bearer <token>`.
 """
 import os
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 DEFAULT_BASE_URL = "https://tasks.yulelovelights.com"
 
 
 class VikunjaError(RuntimeError):
-    pass
+    """Every failure this client raises, including transport failures.
+
+    Callers catch this one type and keep going; a bare requests exception
+    would escape their handlers and abort a whole sync run.
+    """
 
 
 class VikunjaClient:
@@ -26,16 +32,31 @@ class VikunjaClient:
         self.timeout = timeout
         self._label_cache = {}
 
+        # Retry only failures where the request provably never reached the
+        # server. Read timeouts and 5xx are deliberately NOT retried: this
+        # client creates tasks with PUT/POST, and replaying a request that
+        # may already have been applied would duplicate them.
+        self._session = requests.Session()
+        adapter = HTTPAdapter(max_retries=Retry(
+            total=4, connect=4, read=0, status=0, redirect=0,
+            backoff_factor=1.0,
+        ))
+        self._session.mount("https://", adapter)
+        self._session.mount("http://", adapter)
+
     # --- plumbing -------------------------------------------------------
 
     def _req(self, method, path, **kwargs):
-        res = requests.request(
-            method,
-            f"{self.api}{path}",
-            headers={"Authorization": f"Bearer {self.token}"},
-            timeout=self.timeout,
-            **kwargs,
-        )
+        try:
+            res = self._session.request(
+                method,
+                f"{self.api}{path}",
+                headers={"Authorization": f"Bearer {self.token}"},
+                timeout=self.timeout,
+                **kwargs,
+            )
+        except requests.RequestException as e:
+            raise VikunjaError(f"{method} {path} -> transport failure: {e}") from e
         if res.status_code >= 400:
             raise VikunjaError(
                 f"{method} {path} -> {res.status_code}: {res.text[:400]}"
