@@ -1,6 +1,11 @@
-"""Main entry point. Intended to run once per day via Railway's Cron
-Schedule (e.g. 11:00 UTC = 7am Eastern during EDT — adjust for standard
-time, see README).
+"""Main entry point. Runs once per day via Railway's Cron Schedule.
+
+The cron fires at BOTH 11:00 and 12:00 UTC (`0 11,12 * * *`). Exactly one
+of those is 7am Eastern at any time of year — 11:00 under EDT, 12:00 under
+EST — and the other exits immediately at the top of main(). Railway's cron
+is UTC and does not follow US daylight saving, so this is what keeps
+delivery at 7am year-round without anyone editing the schedule twice a
+year. Set FORCE_RUN=true to bypass the hour check for a manual run.
 
 Each run:
   1. Always attempts a Daily report for "yesterday." Skips if zero
@@ -235,8 +240,19 @@ def run_monthly(drive, today):
     print(f"Monthly report for {month_str} generated, saved, and sent.")
 
 
+DELIVERY_HOUR_LOCAL = 7  # 7am Eastern, year-round
+
+
 def main():
-    today = datetime.now(TZ).date()
+    now = datetime.now(TZ)
+    forced = os.environ.get("FORCE_RUN", "").lower() in ("true", "1", "yes")
+    if now.hour != DELIVERY_HOUR_LOCAL and not forced:
+        # The other half of the 11:00/12:00 UTC cron pair — see module docstring.
+        print(f"Local time is {now:%H:%M %Z}, not {DELIVERY_HOUR_LOCAL:02d}:00 — "
+              f"nothing to do. (FORCE_RUN=true to override.)")
+        return
+
+    today = now.date()
     drive = get_drive_service()
 
     run_daily(drive, today)
