@@ -438,18 +438,36 @@ def sync_daily_report(drive, report, date_str, internal_state_folder_id):
                 due_date=_to_rfc3339(v["due_date"]) if v.get("due_date") else None,
                 priority=v.get("priority") or 0,
             )
-            vik.move_task_to_bucket(
-                project["id"], view["id"], buckets[bucket_title.lower()], task["id"])
-            for env_var in OWNER_ASSIGNEES.get(it["owner_key"], []):
-                username = (os.environ.get(env_var) or "").strip().lower()
-                if username and username in users:
-                    vik.assign_user(task["id"], users[username])
-            vik.add_label(task["id"], vik.ensure_label(AUTO_LABEL))
         except VikunjaError as e:
             summary["errors"].append(f"create {title!r}: {e}")
             continue
 
+        # The task exists from here on. Every later step is best-effort: a
+        # failure must still leave the task recorded in the index and the
+        # summary, or it becomes an orphan that no future run accounts for.
+        problems = []
+
+        def _step(what, fn):
+            try:
+                fn()
+            except VikunjaError as e:
+                problems.append(f"{what} ({e})")
+
+        _step("bucket", lambda: vik.move_task_to_bucket(
+            project["id"], view["id"], buckets[bucket_title.lower()], task["id"]))
+        for env_var in OWNER_ASSIGNEES.get(it["owner_key"], []):
+            username = (os.environ.get(env_var) or "").strip().lower()
+            if username and username in users:
+                _step(f"assign {username}",
+                      lambda u=users[username]: vik.assign_user(task["id"], u))
+        _step("label", lambda: vik.add_label(task["id"], vik.ensure_label(AUTO_LABEL)))
+
         record["task_id"] = task["id"]
+        record["incomplete"] = problems or None
+        if problems:
+            summary["errors"].append(
+                f"task #{task['id']} {title!r} was created but is incomplete — "
+                f"{'; '.join(problems)}")
         summary["created"].append(record)
         created_count += 1
         index["tasks"][it["fp"]] = {

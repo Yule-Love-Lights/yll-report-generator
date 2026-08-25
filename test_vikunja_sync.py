@@ -257,5 +257,27 @@ except VikunjaError as e:
     check("Auto Closed" in str(e) and "For Naldo" in str(e),
           "missing buckets named explicitly in the error")
 
-print("\nRESULT:", "ALL PASS" if ok else "FAILURES ABOVE")
+
+
+# 5. A task created but not fully decorated is still recorded, not orphaned
+class FlakyVikunja(FakeVikunja):
+    def move_task_to_bucket(self, pid, vid, bucket, tid):
+        raise VikunjaError("connect timeout")
+
+
+vikunja_sync.VikunjaClient = FlakyVikunja
+DRIVE_FILES.pop("vikunja_task_index.json", None)
+FakeVikunja.get_buckets = lambda self, p, v: {"for jason": 11, "for naldo": 12,
+                                              "for anyone": 13, "done": 14, "auto closed": 15}
+s, calls = run("BUCKET MOVE FAILS")
+check(len(s["created"]) == 2, f"tasks still recorded as created, got {len(s['created'])}")
+check(all(c["task_id"] for c in s["created"]), "created tasks kept their real task ids")
+check(all(c.get("incomplete") for c in s["created"]), "each is flagged incomplete")
+check(any("incomplete" in e for e in s["errors"]), "incompleteness surfaced as an error")
+check(len(DRIVE_FILES.get("vikunja_task_index.json", {}).get("tasks", {})) >= 2,
+      "fingerprints still written to the index (no orphans)")
+check(any(c[0] == "assign" for c in calls) and any(c[0] == "label" for c in calls),
+      "later steps still ran after the bucket move failed")
+
+print("\nFINAL:", "ALL PASS" if ok else "FAILURES ABOVE")
 sys.exit(0 if ok else 1)
