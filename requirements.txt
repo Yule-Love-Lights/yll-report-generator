@@ -1,4 +1,6 @@
-anthropic>=0.40.0
+# 1.x floor: vikunja_sync.py uses output_config (structured outputs + effort)
+# and adaptive thinking, which the 0.x SDK does not accept.
+anthropic>=1.0.0
 google-api-python-client>=2.140.0
 google-auth>=2.34.0
 python-docx>=1.1.2

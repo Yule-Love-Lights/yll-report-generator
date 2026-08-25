@@ -89,6 +89,85 @@ transcripts to exist, this is most useful for catching setup errors
 real report — but if yesterday had real calls, you'll get a real Discord
 DM out of it.
 
+## Vikunja task sync (Daily only)
+
+After the Daily report is built, `vikunja_sync.py` pushes its action items
+onto the Kanban board at https://tasks.yulelovelights.com, in the project
+**Tasks from Reports**. It consumes the same structured `report` dict the
+docx renderer uses — the finished Word document is never parsed.
+
+Weekly and Monthly reports do **not** sync; they would just restate items
+that are already on the board.
+
+### What it does with each action item
+
+| Situation | What happens |
+|---|---|
+| New work | Task created, dropped in the owner's bucket, assigned, labelled `auto` |
+| Same item, same wording as an existing open task | No new task — a comment is added to the existing one |
+| Same work, reworded ("call the HOA back" → "follow up with Palm Beach HOA") | No new task — Claude matches it to the open task and comments on it |
+| Report says it's already done | Existing task moved to **Auto Closed** (never marked Done — you confirm and move it to Done yourself) |
+| Vague, garbled, or non-actionable | Not written to the board; listed in the DM as "NOT added" so nothing is silently lost |
+
+Owner → bucket: `Jason` → For Jason, `Naldo` → For Naldo, `Both` and
+`TJ_Social` → For Anyone. `Both` is assigned to both of you; TJ has no
+Vikunja account, so his items land unassigned in For Anyone.
+
+Everything that happened is appended to the daily Discord DM, so the board
+never changes without you seeing exactly what changed.
+
+### Required buckets
+
+The kanban view must have buckets titled exactly **For Jason**, **For
+Naldo**, **For Anyone**, and **Auto Closed** (a **Done** bucket is expected
+too, but the sync never writes to it). A missing bucket fails loudly with
+the names it couldn't find rather than guessing.
+
+### Environment variables
+
+| Variable | Required | Default | Purpose |
+|---|---|---|---|
+| `VIKUNJA_API_TOKEN` | yes | — | Vikunja → Settings → API Tokens. Needs read+write on tasks, labels, comments, and read on projects. |
+| `VIKUNJA_USERNAME_JASON` | yes | — | Vikunja username to assign Jason's items to |
+| `VIKUNJA_USERNAME_NALDO` | yes | — | Vikunja username to assign Naldo's items to |
+| `VIKUNJA_BASE_URL` | no | `https://tasks.yulelovelights.com` | Instance URL |
+| `VIKUNJA_PROJECT_NAME` | no | `Tasks from Reports` | Project title to sync into |
+| `VIKUNJA_SYNC_ENABLED` | no | `true` | Set `false` to turn the sync off without touching code |
+| `VIKUNJA_SYNC_DRY_RUN` | no | `false` | Plan and report, write nothing. Run this way for the first week. |
+| `VIKUNJA_SYNC_MAX_NEW_TASKS` | no | `15` | Ceiling on new tasks per day — a bad extraction can't flood the board |
+| `VIKUNJA_SYNC_MODEL` | no | `claude-opus-5` | Model used for the dedup/matching pass |
+| `VIKUNJA_SYNC_FORCE` | no | `false` | Re-sync a date that's already been synced |
+
+### Safety properties
+
+- **Nothing is written twice.** A date that fully synced is skipped on a
+  rerun, and each auto-created task carries a `yll-sync-id` fingerprint in
+  its description, so duplicates are caught even if the Drive index file is
+  lost. The index lives at `vikunja_task_index.json` in the internal-state
+  folder.
+- **A board failure never blocks the report.** The sync is wrapped in
+  `main.py`; if it throws, the daily report still goes out and the DM says
+  the sync failed.
+- **Everything auto-created is labelled `auto`** — filter by that label to
+  bulk-review or bulk-delete a bad run.
+- **The sync never marks anything Done.** Only you do that.
+
+### Testing it
+
+Offline — no API key, no network, nothing touched:
+
+```
+python test_vikunja_sync.py
+```
+
+Against the real board, replaying a past day's saved report (set
+`VIKUNJA_SYNC_DRY_RUN=true` first so it only reports what it *would* do —
+dry runs are never recorded, so you can replay the same day repeatedly):
+
+```
+python vikunja_sync.py 2026-08-24
+```
+
 ## Cost control
 
 - Check usage anytime at https://console.anthropic.com under **Usage**.

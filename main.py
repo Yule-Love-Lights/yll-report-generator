@@ -26,6 +26,7 @@ from drive_helpers import (
 from report_generator import generate_report
 from docx_renderer import render_report_docx
 from discord_dm import send_dm_to_team
+from vikunja_sync import sync_daily_report, format_summary_for_discord
 from docx import Document
 import io
 
@@ -139,8 +140,19 @@ def run_daily(drive, today):
         print(f"Removed {removed} existing state file(s) for {date_str} before writing fresh one.")
     upload_json(drive, INTERNAL_STATE_FOLDER_ID, f"{date_str}_daily_state.json", report)
 
+    # Push today's action items onto the Vikunja board. A board problem must
+    # never stop the report itself from going out, so this is best-effort and
+    # whatever happened (including a failure) is reported in the DM.
+    try:
+        board_summary = sync_daily_report(drive, report, date_str, INTERNAL_STATE_FOLDER_ID)
+        board_note = format_summary_for_discord(board_summary)
+    except Exception as e:
+        print(f"Vikunja sync failed for {date_str}: {e}")
+        board_note = f"\n**Task board** — sync failed, nothing written: {e}"
+
     send_dm_to_team(
-        f"📋 Daily ops report for {date_range} ({session_count} session(s)) is attached.",
+        f"📋 Daily ops report for {date_range} ({session_count} session(s)) is attached."
+        + board_note,
         filename=filename,
         file_bytes=docx_bytes,
     )
