@@ -21,6 +21,7 @@ a human still confirms before they land in "Done".
 """
 import html
 import hashlib
+import io
 import json
 import os
 import re
@@ -28,8 +29,10 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 from anthropic import Anthropic
+from googleapiclient.errors import HttpError
+from googleapiclient.http import MediaIoBaseUpload
 
-from drive_helpers import list_files, download_json, upload_json, delete_files_with_prefix
+from drive_helpers import list_files, download_json
 from vikunja_client import VikunjaClient, VikunjaError
 
 TZ = ZoneInfo("America/New_York")
@@ -190,20 +193,57 @@ def _description_html(source_text, owner, date_str, fingerprint):
 
 
 # --- persisted index -----------------------------------------------------
+#
+# Drive's file *list* is only eventually consistent with its file *store*: a
+# file can be listed seconds before it can be fetched or deleted. So the
+# index is written by updating one long-lived file in place rather than
+# delete-then-recreate — that keeps the id stable and never opens a window
+# where a listed id 404s. Reads tolerate a stale listing for the same reason.
+# Losing the index is survivable anyway: every auto-created task carries its
+# fingerprint in its own description, so dedup rebuilds from the board.
 
-def _load_index(drive, folder_id):
+def _find_index_file(drive, folder_id):
     for f in list_files(drive, folder_id, name_prefix=INDEX_FILENAME):
         if f["name"] == INDEX_FILENAME:
-            try:
-                return download_json(drive, f["id"])
-            except ValueError:
-                break
-    return {"tasks": {}, "synced_dates": []}
+            return f
+    return None
+
+
+def _load_index(drive, folder_id):
+    empty = {"tasks": {}, "synced_dates": []}
+    f = _find_index_file(drive, folder_id)
+    if not f:
+        return empty
+    try:
+        loaded = download_json(drive, f["id"])
+    except Exception as e:
+        print(f"Could not read {INDEX_FILENAME} ({e}) — rebuilding dedup from the board.")
+        return empty
+    loaded.setdefault("tasks", {})
+    loaded.setdefault("synced_dates", [])
+    return loaded
 
 
 def _save_index(drive, folder_id, index):
-    delete_files_with_prefix(drive, folder_id, INDEX_FILENAME)
-    upload_json(drive, folder_id, INDEX_FILENAME, index)
+    payload = json.dumps(index, indent=2).encode("utf-8")
+    media = MediaIoBaseUpload(io.BytesIO(payload), mimetype="application/json")
+    existing = _find_index_file(drive, folder_id)
+    if existing:
+        try:
+            drive.files().update(
+                fileId=existing["id"], media_body=media, supportsAllDrives=True,
+            ).execute(num_retries=5)
+            return
+        except HttpError as e:
+            if e.resp.status != 404:
+                raise
+            # Listed but not yet fetchable, or deleted out from under us.
+            print(f"{INDEX_FILENAME} listing was stale — writing a fresh one.")
+            media = MediaIoBaseUpload(io.BytesIO(payload), mimetype="application/json")
+    drive.files().create(
+        body={"name": INDEX_FILENAME, "parents": [folder_id]},
+        media_body=media, fields="id", supportsAllDrives=True,
+    ).execute(num_retries=5)
 
 
 def _finish(drive, folder_id, index, date_str, dry):

@@ -48,6 +48,39 @@ fake_drive_helpers.delete_files_with_prefix = lambda drive, folder, prefix: [
 fake_drive_helpers.get_drive_service = lambda: None
 sys.modules["drive_helpers"] = fake_drive_helpers
 
+
+class _Exec:
+    def __init__(self, fn):
+        self._fn = fn
+
+    def execute(self, num_retries=0):
+        return self._fn()
+
+
+class FakeDrive:
+    """Enough of the Drive client for _save_index, which writes the index
+    file through the API directly rather than via drive_helpers."""
+
+    @staticmethod
+    def _payload(media):
+        import json as _json
+        return _json.loads(media.getbytes(0, media.size()).decode("utf-8"))
+
+    def files(self):
+        return self
+
+    def update(self, fileId=None, media_body=None, supportsAllDrives=None):
+        if fileId not in DRIVE_FILES:
+            raise AssertionError(f"update() on unknown file {fileId}")
+        return _Exec(lambda: DRIVE_FILES.__setitem__(fileId, self._payload(media_body)))
+
+    def create(self, body=None, media_body=None, fields=None, supportsAllDrives=None):
+        name = body["name"]
+        return _Exec(lambda: DRIVE_FILES.__setitem__(name, self._payload(media_body)))
+
+
+DRIVE = FakeDrive()
+
 import vikunja_sync  # noqa: E402
 from vikunja_client import VikunjaError  # noqa: E402
 
@@ -159,7 +192,7 @@ def run(label, dry=False):
     CALLS.clear()
     CLASSIFY_RESPONSE = build_response()
     os.environ["VIKUNJA_SYNC_DRY_RUN"] = "true" if dry else "false"
-    s = vikunja_sync.sync_daily_report(None, REPORT, "2026-08-25", "state-folder")
+    s = vikunja_sync.sync_daily_report(DRIVE, REPORT, "2026-08-25", "state-folder")
     print(f"\n===== {label} =====")
     print(vikunja_sync.format_summary_for_discord(s))
     return s, list(CALLS)

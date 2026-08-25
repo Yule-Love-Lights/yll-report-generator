@@ -59,15 +59,17 @@ once a day and exits).
 4. Add all 7 environment variables listed above in the Variables tab.
 5. Go to Settings -> Deploy -> **Cron Schedule**. Set it to:
    ```
-   0 11 * * *
+   0 11,12 * * *
    ```
-   This means 11:00 UTC daily, which is 7:00 AM Eastern **during Daylight
-   Saving Time (roughly March-November)**. When clocks fall back in
-   November, change this to `0 12 * * *` to stay at 7am Eastern — Railway's
-   cron runs in UTC and won't auto-adjust for DST. Worth a calendar
-   reminder twice a year, or check Railway's cron settings for a timezone
-   option if one's been added since — I'd verify current behavior in the
-   app rather than take my word for it.
+   Railway's cron is UTC and does not follow US daylight saving, so a
+   single fixed hour drifts by one hour twice a year. Firing at **both**
+   11:00 and 12:00 UTC fixes that permanently: exactly one of them is 7am
+   Eastern on any given day (11:00 under EDT, 12:00 under EST), and
+   `main.py` exits immediately on the one that isn't. No twice-yearly
+   edit, no calendar reminder.
+
+   The wasted firing costs a container start and exits in well under a
+   second. To run manually outside 7am, set `FORCE_RUN=true`.
 6. Deploy. A cron-scheduled service won't show "Active" the way the
    capture bot does — it runs, does its work, and exits, then Railway
    spins it up again at the next scheduled time. Check **Deploy Logs**
@@ -80,8 +82,12 @@ Don't wait for 7am tomorrow to find out if it works. In Railway's console
 (same place you ran `node backfill.js` before), run:
 
 ```
-python main.py
+FORCE_RUN=true python main.py
 ```
+
+`FORCE_RUN=true` is required outside 7am Eastern — without it `main.py`
+exits straight away, which is how the 11:00/12:00 UTC cron pair works
+(see step 5 above).
 
 This runs it immediately with today's date. Since "yesterday" needs real
 transcripts to exist, this is most useful for catching setup errors
