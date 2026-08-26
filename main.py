@@ -155,12 +155,21 @@ def run_daily(drive, today):
         print(f"Vikunja sync failed for {date_str}: {e}")
         board_note = f"\n**Task board** — sync failed, nothing written: {e}"
 
+    # The report goes out on its own first. The board note is built from
+    # report data and has no natural length bound, so it must never share a
+    # message with the report — an over-long note used to 400 the whole DM
+    # and take the report down with it.
     send_dm_to_team(
-        f"📋 Daily ops report for {date_range} ({session_count} session(s)) is attached."
-        + board_note,
+        f"📋 Daily ops report for {date_range} ({session_count} session(s)) is attached.",
         filename=filename,
         file_bytes=docx_bytes,
     )
+
+    if board_note.strip():
+        try:
+            send_dm_to_team(board_note)
+        except Exception as e:
+            print(f"Could not DM the task-board summary for {date_str}: {e}")
     print(f"Daily report for {date_str} generated and sent.")
 
 
