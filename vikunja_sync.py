@@ -509,8 +509,18 @@ def sync_daily_report(drive, report, date_str, internal_state_folder_id):
     return summary
 
 
+def _short(text, limit=120):
+    text = " ".join((text or "").split())
+    return text if len(text) <= limit else text[:limit - 1].rstrip() + "…"
+
+
 def format_summary_for_discord(summary):
-    """Short plain-text block appended to the daily report DM."""
+    """Plain-text block DM'd after the daily report.
+
+    Item text is trimmed here because it comes straight from the report and
+    can run to several hundred characters per line; discord_dm splits the
+    result across messages, but trimming keeps it readable rather than
+    merely deliverable."""
     if not summary:
         return ""
     lines = ["", f"**Task board** ({PROJECT_NAME})"]
@@ -519,15 +529,15 @@ def format_summary_for_discord(summary):
 
     for c in summary["created"]:
         due = f" (due {c['due_date']})" if c.get("due_date") else ""
-        lines.append(f"• NEW → {c['bucket']}: {c['title']}{due}")
+        lines.append(f"• NEW → {c['bucket']}: {_short(c['title'])}{due}")
     for r in summary["restated"]:
-        lines.append(f"• rolled over (#{r['task_id']}): {r['title']}")
+        lines.append(f"• rolled over (#{r['task_id']}): {_short(r['title'])}")
     for a in summary["auto_closed"]:
-        lines.append(f"• auto-closed (#{a['task_id']}): {a['title']} — {a['reason']}")
+        lines.append(f"• auto-closed (#{a['task_id']}): {_short(a['title'], 60)} — {_short(a['reason'], 90)}")
     for n in summary["needs_review"]:
-        lines.append(f"• NOT added ({n['why']}): {n['item']}")
+        lines.append(f"• NOT added: {_short(n['item'])}")
     for e in summary["errors"]:
-        lines.append(f"• ⚠️ error: {e}")
+        lines.append(f"• ⚠️ error: {_short(e, 160)}")
 
     if len(lines) == 2:
         lines.append("• no changes")
