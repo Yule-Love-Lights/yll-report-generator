@@ -52,8 +52,12 @@ def generate_report(project_instructions: str, report_type: str, date_range: str
     # material (especially early on, before enough daily-state history has
     # built up and raw transcripts get used as a fallback) and need more
     # room to avoid truncating mid-JSON.
-    max_tokens_by_type = {"Daily": 8000, "Weekly": 16000, "Monthly": 16000}
-    max_tokens = max_tokens_by_type.get(report_type, 8000)
+    # A Weekly hit the old 16000 ceiling on 2026-08-31 and was cut off
+    # mid-JSON at 60,909 characters, which lost the whole report. Sonnet 4.6
+    # allows up to 128K output tokens, so the ceiling now has real headroom
+    # rather than sitting just above the largest report seen so far.
+    max_tokens_by_type = {"Daily": 24000, "Weekly": 64000, "Monthly": 64000}
+    max_tokens = max_tokens_by_type.get(report_type, 24000)
 
     system_prompt = f"""{project_instructions}
 
@@ -70,12 +74,15 @@ Known session count for this period: {session_count}.
             f"aging/open items and what has closed since) ===\n\n{prior_reports_text}"
         )
 
-    response = client.messages.create(
+    # Streaming is required at these max_tokens values — a non-streaming
+    # request that large can exceed the SDK's HTTP timeout.
+    with client.messages.stream(
         model=MODEL,
         max_tokens=max_tokens,
         system=system_prompt,
         messages=[{"role": "user", "content": user_content}],
-    )
+    ) as stream:
+        response = stream.get_final_message()
 
     raw_text = "".join(block.text for block in response.content if block.type == "text")
     raw_text = raw_text.strip()
@@ -84,14 +91,23 @@ Known session count for this period: {session_count}.
         if raw_text.startswith("json"):
             raw_text = raw_text[4:]
 
+    if response.stop_reason == "max_tokens":
+        # Fail here rather than at json.loads: the cause is the ceiling, and
+        # saying so plainly is the difference between a five-minute fix and
+        # an afternoon spent reading a JSONDecodeError.
+        raise RuntimeError(
+            f"{report_type} report hit the {max_tokens}-token output ceiling and was "
+            f"truncated at {len(raw_text)} chars. Raise max_tokens_by_type[{report_type!r}] "
+            f"in report_generator.py, or reduce the source material fed in."
+        )
+
     try:
         data = json.loads(raw_text)
     except json.JSONDecodeError as e:
-        stop_reason = response.stop_reason
         raise RuntimeError(
-            f"Claude's response wasn't valid JSON (likely truncated). "
-            f"stop_reason={stop_reason}, response length={len(raw_text)} chars, "
-            f"max_tokens was {max_tokens}. Original error: {e}"
+            f"Claude's response wasn't valid JSON. stop_reason={response.stop_reason}, "
+            f"response length={len(raw_text)} chars, max_tokens was {max_tokens}. "
+            f"Original error: {e}"
         ) from e
     data.setdefault("report_type", report_type)
     data.setdefault("date_range", date_range)
