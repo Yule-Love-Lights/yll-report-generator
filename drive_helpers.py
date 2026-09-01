@@ -3,6 +3,7 @@ import io
 import json
 import os
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 from google.oauth2 import service_account
 
@@ -58,6 +59,40 @@ def download_bytes(drive, file_id):
     return buf.getvalue()
 
 
+def find_by_name(drive, folder_id, filename):
+    """The one file in folder_id named exactly filename, or None."""
+    for f in list_files(drive, folder_id, name_prefix=filename):
+        if f['name'] == filename:
+            return f
+    return None
+
+
+def _upsert(drive, folder_id, filename, media, fields='id'):
+    """Writes filename in folder_id, replacing its contents if it exists.
+
+    Deliberately NOT delete-then-create. Drive's file *list* is only
+    eventually consistent with its file *store*, so a just-listed id can
+    404 on delete — which it did, aborting a monthly rollup between the
+    delete and the upload. Updating in place keeps one stable id and has
+    no window where the file is missing or duplicated.
+    """
+    existing = find_by_name(drive, folder_id, filename)
+    if existing:
+        try:
+            return drive.files().update(
+                fileId=existing['id'], media_body=media, fields=fields,
+                supportsAllDrives=True,
+            ).execute(num_retries=5)
+        except HttpError as e:
+            if e.resp.status != 404:
+                raise
+            # Listing was stale; fall through and create a fresh one.
+    return drive.files().create(
+        body={'name': filename, 'parents': [folder_id]},
+        media_body=media, fields=fields, supportsAllDrives=True,
+    ).execute(num_retries=5)
+
+
 def upload_docx(drive, folder_id, filename, docx_bytes):
     media = MediaIoBaseUpload(
         io.BytesIO(docx_bytes),
@@ -65,38 +100,31 @@ def upload_docx(drive, folder_id, filename, docx_bytes):
         resumable=True,
         chunksize=1024 * 1024,  # 1MB chunks
     )
-    request = drive.files().create(
-        body={'name': filename, 'parents': [folder_id]},
-        media_body=media,
-        fields='id, webViewLink',
-        supportsAllDrives=True,
-    )
-    file = None
-    while file is None:
-        status, file = request.next_chunk(num_retries=5)
-    return file
+    return _upsert(drive, folder_id, filename, media, fields='id, webViewLink')
 
 
 def delete_files_with_prefix(drive, folder_id, name_prefix):
     """Deletes all files in a folder whose name starts with name_prefix.
-    Used to clear out any existing daily-state file(s) before writing a
-    fresh one, so re-running the daily job never leaves duplicates."""
-    existing = list_files(drive, folder_id, name_prefix=name_prefix)
-    for f in existing:
-        drive.files().delete(fileId=f['id'], supportsAllDrives=True).execute()
-    return len(existing)
+
+    A 404 is treated as success — the file being gone is the outcome this
+    asks for, and a stale listing must not abort the caller.
+    """
+    deleted = 0
+    for f in list_files(drive, folder_id, name_prefix=name_prefix):
+        try:
+            drive.files().delete(
+                fileId=f['id'], supportsAllDrives=True).execute(num_retries=5)
+            deleted += 1
+        except HttpError as e:
+            if e.resp.status != 404:
+                raise
+    return deleted
 
 
 def upload_json(drive, folder_id, filename, data_dict):
     payload = json.dumps(data_dict, indent=2).encode('utf-8')
     media = MediaIoBaseUpload(io.BytesIO(payload), mimetype='application/json')
-    file = drive.files().create(
-        body={'name': filename, 'parents': [folder_id]},
-        media_body=media,
-        fields='id',
-        supportsAllDrives=True,
-    ).execute(num_retries=5)
-    return file
+    return _upsert(drive, folder_id, filename, media)
 
 
 def download_json(drive, file_id):
