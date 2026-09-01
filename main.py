@@ -21,6 +21,7 @@ Each run:
 """
 import os
 import json
+import re
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -213,25 +214,68 @@ def run_monthly(drive, today):
     month_str = last_day_of_prev_month.strftime("%Y-%m")
     month_label = last_day_of_prev_month.strftime("%B %Y")
 
-    # Monthly rolls up from that month's saved Weekly reports, not raw transcripts
+    # Monthly rolls up from that month's saved Weekly reports, not raw
+    # transcripts. But a Weekly that failed to generate leaves a hole in the
+    # month with nothing to signal it — that happened for 2026-08-24..30 and
+    # produced an August report covering one week out of five. So any day of
+    # the month no saved Weekly covers falls back to that day's Daily state,
+    # the same way run_weekly falls back to raw transcripts.
     all_weekly = list_files(drive, WEEKLY_REPORTS_FOLDER_ID)
     this_month_weeklies = [f for f in all_weekly if month_str in f["name"]]
     this_month_weeklies.sort(key=lambda f: f["name"])
 
-    if not this_month_weeklies:
-        print(f"No weekly reports found for {month_str} — skipping monthly report.")
-        return
-
     parts = []
+    covered = set()
     for f in this_month_weeklies:
+        dates = re.findall(r"(\d{4}-\d{2}-\d{2})", f["name"])
+        if len(dates) == 2:
+            day = datetime.strptime(dates[0], "%Y-%m-%d").date()
+            end = datetime.strptime(dates[1], "%Y-%m-%d").date()
+            while day <= end:
+                covered.add(day)
+                day += timedelta(days=1)
         content = download_bytes(drive, f["id"])
         parts.append(f"--- {f['name']} ---\n{_docx_bytes_to_text(content)}")
+
+    # Whole-day gaps in this month, as contiguous runs.
+    first_of_month = last_day_of_prev_month.replace(day=1)
+    gaps, run = [], []
+    day = first_of_month
+    while day <= last_day_of_prev_month:
+        if day in covered:
+            if run:
+                gaps.append((run[0], run[-1]))
+                run = []
+        else:
+            run.append(day)
+        day += timedelta(days=1)
+    if run:
+        gaps.append((run[0], run[-1]))
+
+    gap_sessions = 0
+    for start, end in gaps:
+        n, text = _daily_states_for_range(
+            drive, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
+        if n == 0:
+            continue
+        gap_sessions += n
+        print(f"Monthly: no weekly covers {start}..{end}; "
+              f"filling from {n} session(s) of daily data.")
+        parts.append(
+            f"--- DAILY-LEVEL SOURCE for {start} to {end} "
+            f"(no weekly report exists for these days) ---\n{text}")
+
+    if not parts:
+        print(f"No weekly reports or daily data found for {month_str} — skipping monthly report.")
+        return
+
     source_text = "\n\n".join(parts)
 
     prior_reports_text = _recent_reports_text(drive, MONTHLY_REPORTS_FOLDER_ID, limit=2)
 
     report = generate_report(
-        PROJECT_INSTRUCTIONS, "Monthly", month_label, len(this_month_weeklies),
+        PROJECT_INSTRUCTIONS, "Monthly", month_label,
+        len(this_month_weeklies) + gap_sessions,
         source_text, prior_reports_text=prior_reports_text,
     )
     docx_bytes = render_report_docx(report)
